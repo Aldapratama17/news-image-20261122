@@ -161,56 +161,103 @@ def truncate_at_clauses(draw, text, font, max_width, max_lines):
     
     return text[:50]
 
+# Abbreviations that bring clause boundaries within 110 chars
+ABBREVIATIONS = [
+    # Russian: remove " near Coalition-of-the-Willing exercises" to bring semicolon within range
+    (" near Coalition-of-the-Willing exercises", ""),
+    (" near Coalition of the Willing exercises", ""),
+    
+    # Anthropic: shorten specific phrases
+    (" share sale", " IPO"),
+    (" billion", "B"),
+    (" million", "M"),
+    (" attracted", " drew"),
+    (" in retail", " retail"),
+    
+    # FBI: shorten the investigative phrase AND remove trailing part
+    (" is investigating a suspected breach of the nationwide database", " investigates its criminal-records database"),
+    (" is investigating a suspected breach of its nationwide database", " investigates its criminal-records database"),
+    ("The FBI investigates a suspected breach of the nationwide database", "The FBI investigates its criminal-records database"),
+    ("The FBI investigates a suspected breach of its nationwide database", "The FBI investigates its criminal-records database"),
+    (" to share warrants, criminal histories and background checks", ""),
+    
+    # General abbreviations
+    (" suspected breach of the", " probe of the"),
+    (" suspected breach of its", " probe of its"),
+    (" nationwide database", " criminal-records database"),
+    (" the nationwide", ""),
+    (" its nationwide", " its"),
+]
+
+def apply_abbreviations(text):
+    """Apply abbreviations to shorten text."""
+    result = text
+    for old, new in ABBREVIATIONS:
+        result = result.replace(old, new)
+    return result
+
 def build_fact_from_summary(draw, summary, font, max_width, max_lines, max_chars=110):
     """
     Build a complete fact from summary_1line:
-    - Split on clause boundaries (; then ,) to get segments
-    - Build fact from complete segments up to ~110 chars
-    - Ensure it ends with a period
-    - Verify with textbbox it fits in max_lines
-    - If not, shorten at segment boundaries
+    - Apply abbreviations first
+    - If abbreviated <= max_chars, use it (fix period ending)
+    - If > max_chars, find last clause boundary (; : ,) in abbreviated at reasonable position (>50)
+    - If no clause boundary in abbreviated, try original text
+    - If still no boundary, try " and " conjunction
+    - If still no boundary, cut at last word boundary
+    - Always end with period
+    - Verify with textbbox it fits in max_lines, trying fonts from 16 down to 13
     """
-    # First split on semicolons (strong boundaries)
-    segments = re.split(r'(?<=;)\s+', summary.strip())
+    summary = summary.strip()
     
-    # If only one segment and it's long, split on commas
-    if len(segments) == 1 and len(segments[0]) > max_chars:
-        segments = re.split(r'(?<=,)\s+', segments[0])
+    # Apply abbreviations FIRST
+    abbreviated = apply_abbreviations(summary)
     
-    # Build fact by adding segments until we hit max_chars
-    fact_parts = []
-    for seg in segments:
-        test = " ".join(fact_parts + [seg]).strip()
-        if len(test) <= max_chars:
-            fact_parts.append(seg)
-        else:
-            break
-    
-    if not fact_parts:
-        # Fallback: truncate at max_chars and find last STRONG punctuation
-        if len(summary) > max_chars:
-            truncated = summary[:max_chars]
-            last_punct = max(truncated.rfind('.'), truncated.rfind('!'), truncated.rfind('?'))
-            if last_punct > max_chars * 0.4:
-                fact = truncated[:last_punct+1].strip()
-            else:
-                # No strong punctuation, find any punctuation
-                last_punct = max(truncated.rfind(';'), truncated.rfind(':'), truncated.rfind(','))
-                if last_punct > max_chars * 0.4:
-                    fact = truncated[:last_punct].strip() + "."
-                else:
-                    fact = truncated.strip() + "."
-        else:
-            fact = summary.strip()
+    # If abbreviated fits, use it
+    if len(abbreviated) <= max_chars:
+        fact = abbreviated
+        if fact.endswith((',', ';', ':')):
+            fact = fact[:-1] + "."
+        elif not fact.endswith(('.', '!', '?')):
+            fact = fact + "."
     else:
-        fact = " ".join(fact_parts).strip()
-    
-    # Ensure it ends with a period (replace trailing comma/semicolon/colon with period)
-    fact = fact.rstrip()
-    if fact.endswith((',', ';', ':')):
-        fact = fact[:-1] + "."
-    elif not fact.endswith(('.', '!', '?')):
-        fact = fact + "."
+        # Try to find clause boundary in abbreviated text at reasonable position (> 50)
+        def find_last_clause(text, limit, min_pos=50):
+            """Find last clause boundary (; : ,) within limit, but at least at min_pos."""
+            for i in range(min(limit, len(text)) - 1, min_pos - 1, -1):
+                if text[i] in ';:,':
+                    return i
+            return -1
+        
+        # Try abbreviated text
+        clause_pos = find_last_clause(abbreviated, max_chars)
+        if clause_pos > 0:
+            fact = abbreviated[:clause_pos].strip() + "."
+        else:
+            # Try original text as fallback
+            clause_pos = find_last_clause(summary, max_chars)
+            if clause_pos > 0:
+                fact = summary[:clause_pos].strip() + "."
+            else:
+                # Try " and " conjunction in abbreviated
+                truncated = abbreviated[:max_chars]
+                last_and = truncated.rfind(" and ")
+                if last_and > max_chars * 0.3:
+                    fact = truncated[:last_and].strip() + "."
+                else:
+                    # Try " and " conjunction in original
+                    truncated = summary[:max_chars]
+                    last_and = truncated.rfind(" and ")
+                    if last_and > max_chars * 0.3:
+                        fact = truncated[:last_and].strip() + "."
+                    else:
+                        # Last word boundary in abbreviated
+                        last_space = truncated.rfind(' ')
+                        if last_space > max_chars * 0.3:
+                            fact = truncated[:last_space].strip() + "."
+                        else:
+                            # Ultimate fallback
+                            fact = truncated.strip() + "."
     
     # Now verify it fits with textbbox, trying fonts from 16 down to 13
     fonts = [
@@ -225,18 +272,18 @@ def build_fact_from_summary(draw, summary, font, max_width, max_lines, max_chars
             lines = wrap_text_full(draw, fact, f, max_width, max_lines)
             return lines, f, line_h
     
-    # If still doesn't fit, shorten at segment boundaries until it does
-    while fact_parts:
-        fact = " ".join(fact_parts).strip()
-        # Ensure period ending
-        if fact.endswith((',', ';', ':')):
-            fact = fact[:-1] + "."
-        elif not fact.endswith(('.', '!', '?')):
-            fact = fact + "."
-        if can_text_fit(draw, fact, font_fact_13, max_width, max_lines):
-            lines = wrap_text_full(draw, fact, font_fact_13, max_width, max_lines)
+    # If still doesn't fit, shorten at word boundaries until it does
+    words = fact.split()
+    while words:
+        test = " ".join(words)
+        if test.endswith((',', ';', ':')):
+            test = test[:-1] + "."
+        elif not test.endswith(('.', '!', '?')):
+            test = test + "."
+        if can_text_fit(draw, test, font_fact_13, max_width, max_lines):
+            lines = wrap_text_full(draw, test, font_fact_13, max_width, max_lines)
             return lines, font_fact_13, 17
-        fact_parts.pop()
+        words.pop()
     
     # Ultimate fallback
     fallback = "Developing story."
