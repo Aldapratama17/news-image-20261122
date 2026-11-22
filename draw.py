@@ -6,6 +6,7 @@ Renders to entry.png at exactly 1024x1024.
 
 from PIL import Image, ImageDraw, ImageFont
 import json
+import re
 
 # Canvas
 W, H = 1024, 1024
@@ -27,6 +28,7 @@ font_headline_15 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.t
 font_fact_16 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
 font_fact_15 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
 font_fact_14 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+font_fact_13 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
 font_region = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
 font_ticker = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
 font_ticker_text = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
@@ -159,39 +161,90 @@ def truncate_at_clauses(draw, text, font, max_width, max_lines):
     
     return text[:50]
 
-def fit_fact(draw, text, max_width, max_lines):
-    """Fit fact text, trying fonts from 16 down to 14."""
+def build_fact_from_summary(draw, summary, font, max_width, max_lines, max_chars=110):
+    """
+    Build a complete fact from summary_1line:
+    - Split on clause boundaries (; then ,) to get segments
+    - Build fact from complete segments up to ~110 chars
+    - Ensure it ends with a period
+    - Verify with textbbox it fits in max_lines
+    - If not, shorten at segment boundaries
+    """
+    # First split on semicolons (strong boundaries)
+    segments = re.split(r'(?<=;)\s+', summary.strip())
+    
+    # If only one segment and it's long, split on commas
+    if len(segments) == 1 and len(segments[0]) > max_chars:
+        segments = re.split(r'(?<=,)\s+', segments[0])
+    
+    # Build fact by adding segments until we hit max_chars
+    fact_parts = []
+    for seg in segments:
+        test = " ".join(fact_parts + [seg]).strip()
+        if len(test) <= max_chars:
+            fact_parts.append(seg)
+        else:
+            break
+    
+    if not fact_parts:
+        # Fallback: truncate at max_chars and find last STRONG punctuation
+        if len(summary) > max_chars:
+            truncated = summary[:max_chars]
+            last_punct = max(truncated.rfind('.'), truncated.rfind('!'), truncated.rfind('?'))
+            if last_punct > max_chars * 0.4:
+                fact = truncated[:last_punct+1].strip()
+            else:
+                # No strong punctuation, find any punctuation
+                last_punct = max(truncated.rfind(';'), truncated.rfind(':'), truncated.rfind(','))
+                if last_punct > max_chars * 0.4:
+                    fact = truncated[:last_punct].strip() + "."
+                else:
+                    fact = truncated.strip() + "."
+        else:
+            fact = summary.strip()
+    else:
+        fact = " ".join(fact_parts).strip()
+    
+    # Ensure it ends with a period (replace trailing comma/semicolon/colon with period)
+    fact = fact.rstrip()
+    if fact.endswith((',', ';', ':')):
+        fact = fact[:-1] + "."
+    elif not fact.endswith(('.', '!', '?')):
+        fact = fact + "."
+    
+    # Now verify it fits with textbbox, trying fonts from 16 down to 13
     fonts = [
         (16, font_fact_16, 21),
         (15, font_fact_15, 19),
         (14, font_fact_14, 18),
+        (13, font_fact_13, 17),
     ]
-    for size, font, line_h in fonts:
-        if can_text_fit(draw, text, font, max_width, max_lines):
-            lines = wrap_text_full(draw, text, font, max_width, max_lines)
-            return lines, font, line_h
-    # Fallback
-    lines = wrap_text_full(draw, text, font_fact_14, max_width, max_lines)
-    return lines, font_fact_14, 18
-
-def clean_fact(text):
-    """Remove trailing dangling & or , and ensure complete thought."""
-    text = text.strip()
-    # Remove trailing & or ,
-    while text.endswith(('&', ',', ';')):
-        text = text[:-1].strip()
-    # If it ends mid-sentence without punctuation, find last comma/semicolon to end cleanly
-    if text and text[-1] not in '.!?':
-        last_comma = text.rfind(',')
-        last_semi = text.rfind(';')
-        cut = max(last_comma, last_semi)
-        if cut > len(text) * 0.6:  # Only cut if we keep most of the text
-            text = text[:cut].strip()
-    return text
+    
+    for size, f, line_h in fonts:
+        if can_text_fit(draw, fact, f, max_width, max_lines):
+            lines = wrap_text_full(draw, fact, f, max_width, max_lines)
+            return lines, f, line_h
+    
+    # If still doesn't fit, shorten at segment boundaries until it does
+    while fact_parts:
+        fact = " ".join(fact_parts).strip()
+        # Ensure period ending
+        if fact.endswith((',', ';', ':')):
+            fact = fact[:-1] + "."
+        elif not fact.endswith(('.', '!', '?')):
+            fact = fact + "."
+        if can_text_fit(draw, fact, font_fact_13, max_width, max_lines):
+            lines = wrap_text_full(draw, fact, font_fact_13, max_width, max_lines)
+            return lines, font_fact_13, 17
+        fact_parts.pop()
+    
+    # Ultimate fallback
+    fallback = "Developing story."
+    lines = wrap_text_full(draw, fallback, font_fact_13, max_width, max_lines)
+    return lines, font_fact_13, 17
 
 def shorten_headline(text):
     """Shorten headline by dropping trailing clauses at comma/colon, never mid-word."""
-    # Pre-shortened headlines that fit well in 3 lines at 15pt within 165px
     replacements = {
         "COP31 in Antalya closes in on final climate deal after overtime": "COP31 Antalya closes in on final climate deal",
         "Iran attacks US bases in Bahrain; industrial site fire": "Iran attacks US bases in Bahrain; industrial site fire",
@@ -227,73 +280,110 @@ def get_symbol(headline, region):
     if "byd" in h or "court" in h or "defender" in h: return "gavel"
     return "pin"
 
-def draw_symbol(draw, cx, cy, symbol_type, color, size=32):
+def draw_symbol_clipped(draw, cx, cy, symbol_type, color, size, card_rect):
+    """
+    Draw symbol with all coordinates clipped to card_rect.
+    card_rect = (x1, y1, x2, y2) - the card's bounding box.
+    """
+    # Clip helper
+    def clip_x(x):
+        return max(card_rect[0], min(card_rect[2], x))
+    def clip_y(y):
+        return max(card_rect[1], min(card_rect[3], y))
+    def clip_pt(pt):
+        return (clip_x(pt[0]), clip_y(pt[1]))
+    
     s = size // 2
+    cx_c = clip_x(cx)
+    cy_c = clip_y(cy)
+    
     if symbol_type == "globe":
-        draw.ellipse([cx-s, cy-s, cx+s, cy+s], outline=color, width=2)
-        draw.line([(cx, cy-s), (cx, cy+s)], fill=color, width=1)
-        draw.line([(cx-s, cy), (cx+s, cy)], fill=color, width=1)
-        draw.line([(cx-s*0.7, cy-s*0.7), (cx+s*0.7, cy+s*0.7)], fill=color, width=1)
+        # Ellipse and cross lines - clip each coordinate
+        x1, y1 = clip_x(cx_c - s), clip_y(cy_c - s)
+        x2, y2 = clip_x(cx_c + s), clip_y(cy_c + s)
+        draw.ellipse([x1, y1, x2, y2], outline=color, width=2)
+        draw.line([clip_pt((cx_c, cy_c - s)), clip_pt((cx_c, cy_c + s))], fill=color, width=1)
+        draw.line([clip_pt((cx_c - s, cy_c)), clip_pt((cx_c + s, cy_c))], fill=color, width=1)
+        draw.line([clip_pt((cx_c - s*0.7, cy_c - s*0.7)), clip_pt((cx_c + s*0.7, cy_c + s*0.7))], fill=color, width=1)
     elif symbol_type == "missile":
-        draw.line([(cx, cy-s), (cx, cy+s)], fill=color, width=3)
-        draw.polygon([(cx, cy-s), (cx-4, cy-s+8), (cx+4, cy-s+8)], fill=color)
-        draw.line([(cx-6, cy+2), (cx+6, cy-2)], fill=color, width=2)
+        # Vertical line
+        draw.line([clip_pt((cx_c, cy_c - s)), clip_pt((cx_c, cy_c + s))], fill=color, width=3)
+        # Tip triangle
+        p1 = clip_pt((cx_c, cy_c - s))
+        p2 = clip_pt((cx_c - 4, cy_c - s + 8))
+        p3 = clip_pt((cx_c + 4, cy_c - s + 8))
+        draw.polygon([p1, p2, p3], fill=color)
+        # Diagonal line - THIS WAS THE STRAY LINE - now clipped
+        draw.line([clip_pt((cx_c - 6, cy_c + 2)), clip_pt((cx_c + 6, cy_c - 2))], fill=color, width=2)
     elif symbol_type == "explosion":
         import math
         for angle in [0, 45, 90, 135, 180, 225, 270, 315]:
             rad = math.radians(angle)
-            x1 = cx + int(s * 0.3 * math.cos(rad))
-            y1 = cy + int(s * 0.3 * math.sin(rad))
-            x2 = cx + int(s * math.cos(rad))
-            y2 = cy + int(s * math.sin(rad))
-            draw.line([(x1, y1), (x2, y2)], fill=color, width=2)
-        draw.ellipse([cx-s//2, cy-s//2, cx+s//2, cy+s//2], outline=color, width=2)
+            x1 = cx_c + int(s * 0.3 * math.cos(rad))
+            y1 = cy_c + int(s * 0.3 * math.sin(rad))
+            x2 = cx_c + int(s * math.cos(rad))
+            y2 = cy_c + int(s * math.sin(rad))
+            draw.line([clip_pt((x1, y1)), clip_pt((x2, y2))], fill=color, width=2)
+        draw.ellipse([clip_x(cx_c - s//2), clip_y(cy_c - s//2), clip_x(cx_c + s//2), clip_y(cy_c + s//2)], outline=color, width=2)
     elif symbol_type == "shield":
-        pts = [(cx, cy-s), (cx+s, cy-s//2), (cx+s, cy+s//2), (cx, cy+s), (cx-s, cy+s//2), (cx-s, cy-s//2)]
+        pts = [
+            clip_pt((cx_c, cy_c - s)),
+            clip_pt((cx_c + s, cy_c - s//2)),
+            clip_pt((cx_c + s, cy_c + s//2)),
+            clip_pt((cx_c, cy_c + s)),
+            clip_pt((cx_c - s, cy_c + s//2)),
+            clip_pt((cx_c - s, cy_c - s//2)),
+        ]
         draw.polygon(pts, outline=color, width=2)
-        draw.line([(cx, cy-s//2), (cx, cy+s//2)], fill=color, width=1)
+        draw.line([clip_pt((cx_c, cy_c - s//2)), clip_pt((cx_c, cy_c + s//2))], fill=color, width=1)
     elif symbol_type == "database":
-        draw.ellipse([cx-s, cy-s//3, cx+s, cy+s//3], outline=color, width=2)
-        draw.line([(cx-s, cy-s//3), (cx-s, cy+s//3*2)], fill=color, width=2)
-        draw.line([(cx+s, cy-s//3), (cx+s, cy+s//3*2)], fill=color, width=2)
-        draw.ellipse([cx-s, cy+s//3*2-s//3, cx+s, cy+s//3*2+s//3], outline=color, width=2)
+        draw.ellipse([clip_x(cx_c - s), clip_y(cy_c - s//3), clip_x(cx_c + s), clip_y(cy_c + s//3)], outline=color, width=2)
+        draw.line([clip_pt((cx_c - s, cy_c - s//3)), clip_pt((cx_c - s, cy_c + s//3*2))], fill=color, width=2)
+        draw.line([clip_pt((cx_c + s, cy_c - s//3)), clip_pt((cx_c + s, cy_c + s//3*2))], fill=color, width=2)
+        draw.ellipse([clip_x(cx_c - s), clip_y(cy_c + s//3*2 - s//3), clip_x(cx_c + s), clip_y(cy_c + s//3*2 + s//3)], outline=color, width=2)
     elif symbol_type == "money":
-        draw.line([(cx, cy-s), (cx, cy+s)], fill=color, width=2)
-        draw.line([(cx-s, cy-4), (cx+s, cy-4)], fill=color, width=2)
-        draw.line([(cx-s, cy+4), (cx+s, cy+4)], fill=color, width=2)
-        draw.text((cx-2, cy-1), "$", font=font_region, fill=color, anchor="mm")
+        draw.line([clip_pt((cx_c, cy_c - s)), clip_pt((cx_c, cy_c + s))], fill=color, width=2)
+        draw.line([clip_pt((cx_c - s, cy_c - 4)), clip_pt((cx_c + s, cy_c - 4))], fill=color, width=2)
+        draw.line([clip_pt((cx_c - s, cy_c + 4)), clip_pt((cx_c + s, cy_c + 4))], fill=color, width=2)
+        draw.text((clip_x(cx_c - 2), clip_y(cy_c - 1)), "$", font=font_region, fill=color, anchor="mm")
     elif symbol_type == "chart":
-        draw.line([(cx-s, cy+s), (cx-s, cy-s), (cx+s, cy-s)], fill=color, width=2)
-        draw.line([(cx-s, cy+s), (cx+s, cy-s*0.5)], fill=color, width=2)
-        draw.line([(cx-s, cy), (cx+s, cy*0.2)], fill=(180,180,180), width=1)
+        draw.line([clip_pt((cx_c - s, cy_c + s)), clip_pt((cx_c - s, cy_c - s)), clip_pt((cx_c + s, cy_c - s))], fill=color, width=2)
+        draw.line([clip_pt((cx_c - s, cy_c + s)), clip_pt((cx_c + s, cy_c - s*0.5))], fill=color, width=2)
+        draw.line([clip_pt((cx_c - s, cy_c)), clip_pt((cx_c + s, cy_c * 0.2))], fill=(180,180,180), width=1)
     elif symbol_type == "rocket":
-        draw.line([(cx, cy-s), (cx, cy+s//2)], fill=color, width=3)
-        draw.polygon([(cx-6, cy+s//2), (cx+6, cy+s//2), (cx, cy+s)], fill=color)
-        draw.line([(cx-4, cy+s//2), (cx-8, cy+s)], fill=color, width=2)
-        draw.line([(cx+4, cy+s//2), (cx+8, cy+s)], fill=color, width=2)
+        draw.line([clip_pt((cx_c, cy_c - s)), clip_pt((cx_c, cy_c + s//2))], fill=color, width=3)
+        draw.polygon([clip_pt((cx_c - 6, cy_c + s//2)), clip_pt((cx_c + 6, cy_c + s//2)), clip_pt((cx_c, cy_c + s))], fill=color)
+        draw.line([clip_pt((cx_c - 4, cy_c + s//2)), clip_pt((cx_c - 8, cy_c + s))], fill=color, width=2)
+        draw.line([clip_pt((cx_c + 4, cy_c + s//2)), clip_pt((cx_c + 8, cy_c + s))], fill=color, width=2)
     elif symbol_type == "scale":
-        draw.line([(cx-s, cy), (cx+s, cy)], fill=color, width=2)
-        draw.line([(cx, cy-s), (cx, cy)], fill=color, width=2)
-        draw.polygon([(cx-s, cy), (cx-s+4, cy-6), (cx-s-4, cy-6)], fill=color)
-        draw.polygon([(cx+s, cy), (cx+s-4, cy-6), (cx+s+4, cy-6)], fill=color)
+        draw.line([clip_pt((cx_c - s, cy_c)), clip_pt((cx_c + s, cy_c))], fill=color, width=2)
+        draw.line([clip_pt((cx_c, cy_c - s)), clip_pt((cx_c, cy_c))], fill=color, width=2)
+        draw.polygon([clip_pt((cx_c - s, cy_c)), clip_pt((cx_c - s + 4, cy_c - 6)), clip_pt((cx_c - s - 4, cy_c - 6))], fill=color)
+        draw.polygon([clip_pt((cx_c + s, cy_c)), clip_pt((cx_c + s - 4, cy_c - 6)), clip_pt((cx_c + s + 4, cy_c - 6))], fill=color)
     elif symbol_type == "waves":
         for i in range(3):
-            y_off = cy - s + i * (2*s//3)
-            draw.line([(cx-s, y_off), (cx-s//2, y_off-4), (cx, y_off), (cx+s//2, y_off-4), (cx+s, y_off)], fill=color, width=2)
+            y_off = cy_c - s + i * (2*s//3)
+            draw.line([
+                clip_pt((cx_c - s, y_off)),
+                clip_pt((cx_c - s//2, y_off - 4)),
+                clip_pt((cx_c, y_off)),
+                clip_pt((cx_c + s//2, y_off - 4)),
+                clip_pt((cx_c + s, y_off))
+            ], fill=color, width=2)
     elif symbol_type == "storm":
-        draw.line([(cx, cy-s), (cx, cy)], fill=color, width=3)
-        draw.line([(cx-6, cy), (cx+6, cy)], fill=color, width=3)
+        draw.line([clip_pt((cx_c, cy_c - s)), clip_pt((cx_c, cy_c))], fill=color, width=3)
+        draw.line([clip_pt((cx_c - 6, cy_c)), clip_pt((cx_c + 6, cy_c))], fill=color, width=3)
         for i in range(3):
-            draw.line([(cx-8+i*4, cy+2), (cx-4+i*4, cy+8)], fill=color, width=2)
+            draw.line([clip_pt((cx_c - 8 + i*4, cy_c + 2)), clip_pt((cx_c - 4 + i*4, cy_c + 8))], fill=color, width=2)
     elif symbol_type == "cricket":
-        draw.ellipse([cx-s, cy, cx+s, cy+2*s], outline=color, width=2)
-        draw.line([(cx, cy), (cx, cy-s)], fill=color, width=3)
-        draw.line([(cx, cy-s), (cx-8, cy-s//2)], fill=color, width=2)
+        draw.ellipse([clip_x(cx_c - s), clip_y(cy_c), clip_x(cx_c + s), clip_y(cy_c + 2*s)], outline=color, width=2)
+        draw.line([clip_pt((cx_c, cy_c)), clip_pt((cx_c, cy_c - s))], fill=color, width=3)
+        draw.line([clip_pt((cx_c, cy_c - s)), clip_pt((cx_c - 8, cy_c - s//2))], fill=color, width=2)
     elif symbol_type == "gavel":
-        draw.rectangle([cx-2, cy-s, cx+2, cy+s//2], fill=color)
-        draw.rectangle([cx-s*1.5, cy+s//2-4, cx+s*1.5, cy+s//2+4], fill=color)
+        draw.rectangle([clip_x(cx_c - 2), clip_y(cy_c - s), clip_x(cx_c + 2), clip_y(cy_c + s//2)], fill=color)
+        draw.rectangle([clip_x(cx_c - s*1.5), clip_y(cy_c + s//2 - 4), clip_x(cx_c + s*1.5), clip_y(cy_c + s//2 + 4)], fill=color)
     else:
-        draw.ellipse([cx-s//2, cy-s//2, cx+s//2, cy+s//2], fill=color)
+        draw.ellipse([clip_x(cx_c - s//2), clip_y(cy_c - s//2), clip_x(cx_c + s//2), clip_y(cy_c + s//2)], fill=color)
 
 # Load stories
 with open("/root/makefun/news-image-20261122/data-news.json") as f:
@@ -303,7 +393,7 @@ stories = []
 for s in raw_stories:
     stories.append({
         "headline": shorten_headline(s["headline"]),
-        "fact": clean_fact(s["summary_1line"]),
+        "summary_1line": s["summary_1line"],
         "symbol": get_symbol(s["headline"], s["region"]),
         "region": s["region"],
     })
@@ -311,7 +401,7 @@ for s in raw_stories:
 # Layout dimensions
 masthead_h = 80
 footer_h = 36
-ticker_h = 36
+ticker_h = 48  # Increased to accommodate two rows if needed
 margin_x = 16
 margin_y = 8
 
@@ -370,11 +460,12 @@ for row_idx, num_cards in enumerate(row_counts):
         draw_rounded_rect(draw, (inner_x, inner_y, inner_x + tag_w, inner_y + tag_h), 4, fill=rcolor)
         draw.text((inner_x + tag_w // 2, inner_y + tag_h // 2), tag_text, font=font_region, fill=(255,255,255), anchor="mm")
         
-        # Symbol (top-right) - larger 32px
+        # Symbol (top-right) - larger 32px, clipped to card
         sym_size = 32
         sym_x = x + card_w - pad - sym_size // 2
         sym_y = y + pad + tag_h // 2
-        draw_symbol(draw, sym_x, sym_y, story["symbol"], rcolor, size=sym_size)
+        card_rect = (x + 1, y + 1, x + card_w - 1, y + card_h - 1)  # Card bounds with 1px margin
+        draw_symbol_clipped(draw, sym_x, sym_y, story["symbol"], rcolor, size=sym_size, card_rect=card_rect)
         
         # Headline area - starts below tag
         headline_y = inner_y + tag_h + 6
@@ -387,28 +478,30 @@ for row_idx, num_cards in enumerate(row_counts):
         for li, line in enumerate(headline_lines):
             draw.text((inner_x, headline_y + li * line_h), line, font=used_font, fill=COLOR_TEXT)
         
-        # Fact area - use remaining space, up to 6 lines
+        # Fact area - use remaining space, up to 8 lines
         fact_y = headline_y + len(headline_lines) * line_h + 4
         fact_max_h = inner_y + inner_h - fact_y
-        max_fact_lines = min(6, max(2, fact_max_h // 20))
+        max_fact_lines = min(8, max(2, fact_max_h // 18))
         
-        # Fit fact in available lines, font 16 down to 14
-        fact_lines, fact_font, fact_line_h = fit_fact(draw, story["fact"], headline_max_w, max_fact_lines)
+        # Build fact from summary_1line - complete clauses, ~110 chars, verify fit
+        fact_lines, fact_font, fact_line_h = build_fact_from_summary(
+            draw, story["summary_1line"], font_fact_16, headline_max_w, max_fact_lines
+        )
         
         for li, line in enumerate(fact_lines):
             draw.text((inner_x, fact_y + li * fact_line_h), line, font=fact_font, fill=COLOR_TEXT_MUTED)
         
         card_index += 1
 
-# Ticker band: "ALSO TODAY" + 4 one-liners
+# Ticker band: "ALSO TODAY" + 4 one-liners (may use 1 or 2 rows)
 ticker_y = H - footer_h - ticker_h
 draw_rounded_rect(draw, (0, ticker_y, W, ticker_y + ticker_h), 0, fill=COLOR_TICKER_BG)
 
 ticker_items = [
-    "Belgium national strike to shut airspace Monday",
-    "Bangladesh PM blames India for fresh unrest",
-    "Antonsen ends Sen's 13-match streak, Hong Kong Open",
-    "Nebraska ends 31-game top-25 drought, beats Ohio State"
+    "Belgium strike to shut airspace Monday",
+    "Bangladesh PM blames India for unrest",
+    "Antonsen ends Sen's streak, Hong Kong Open",
+    "Nebraska ends 31-game drought"
 ]
 
 label = "ALSO TODAY"
@@ -418,15 +511,29 @@ label_x = 20
 label_y = ticker_y + ticker_h // 2
 draw.text((label_x, label_y), label, font=font_ticker, fill=COLOR_TICKER_LABEL, anchor="lm")
 
-# Items to the right of label
+# Items to the right of label - try one row, fallback to two rows
 items_text = " · ".join(ticker_items)
 items_x = label_x + label_w + 16
 items_max_w = W - items_x - 20
 
-# Fit items in one line
 if can_text_fit(draw, items_text, font_ticker_text, items_max_w, 1):
     items_lines = wrap_text_full(draw, items_text, font_ticker_text, items_max_w, 1)
     draw.text((items_x, label_y), items_lines[0], font=font_ticker_text, fill=COLOR_TICKER_TEXT, anchor="lm")
+else:
+    # Two rows: split items into two groups
+    half = len(ticker_items) // 2
+    row1_text = " · ".join(ticker_items[:half])
+    row2_text = " · ".join(ticker_items[half:])
+    
+    row1_y = ticker_y + 12
+    row2_y = ticker_y + 34
+    
+    if can_text_fit(draw, row1_text, font_ticker_text, items_max_w, 1):
+        row1_lines = wrap_text_full(draw, row1_text, font_ticker_text, items_max_w, 1)
+        draw.text((items_x, row1_y), row1_lines[0], font=font_ticker_text, fill=COLOR_TICKER_TEXT, anchor="lm")
+    if can_text_fit(draw, row2_text, font_ticker_text, items_max_w, 1):
+        row2_lines = wrap_text_full(draw, row2_text, font_ticker_text, items_max_w, 1)
+        draw.text((items_x, row2_y), row2_lines[0], font=font_ticker_text, fill=COLOR_TICKER_TEXT, anchor="lm")
 
 # Footer
 footer_y = H - footer_h
