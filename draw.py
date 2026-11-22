@@ -9,26 +9,28 @@ import json
 
 # Canvas
 W, H = 1024, 1024
-img = Image.new('RGB', (W, H), (245, 245, 245))  # Light gray background
+img = Image.new('RGB', (W, H), (245, 245, 245))
 draw = ImageDraw.Draw(img)
 
-# Fonts
-try:
-    font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-    font_headline = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
-    font_headline_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
-    font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
-    font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
-    font_region = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
-    font_footer = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
-except:
-    font_title = ImageFont.load_default()
-    font_headline = ImageFont.load_default()
-    font_headline_small = ImageFont.load_default()
-    font_body = ImageFont.load_default()
-    font_small = ImageFont.load_default()
-    font_region = ImageFont.load_default()
-    font_footer = ImageFont.load_default()
+# Fonts - load with error handling
+def load_font(path, size):
+    try:
+        return ImageFont.truetype(path, size)
+    except:
+        return ImageFont.load_default()
+
+font_title = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+font_headline_18 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+font_headline_17 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 17)
+font_headline_16 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+font_headline_15 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 15)
+font_fact_16 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+font_fact_15 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
+font_fact_14 = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+font_region = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
+font_ticker = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+font_ticker_text = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+font_footer = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
 
 # Colors
 COLOR_BG = (245, 245, 245)
@@ -37,13 +39,15 @@ COLOR_MASTHEAD_BG = (25, 45, 75)
 COLOR_MASTHEAD_TEXT = (255, 255, 255)
 COLOR_ACCENT = (200, 40, 40)
 COLOR_TEXT = (30, 30, 30)
-COLOR_TEXT_MUTED = (100, 100, 100)
+COLOR_TEXT_MUTED = (80, 80, 80)
 COLOR_BORDER = (200, 200, 200)
 COLOR_REGION_BG = (230, 240, 255)
 COLOR_REGION_TEXT = (30, 60, 120)
 COLOR_FOOTER_BG = (230, 230, 230)
+COLOR_TICKER_BG = (25, 45, 75)
+COLOR_TICKER_TEXT = (255, 255, 255)
+COLOR_TICKER_LABEL = (255, 200, 80)
 
-# Region colors
 REGION_COLORS = {
     "Global": (0, 120, 180),
     "Middle East": (180, 80, 0),
@@ -57,12 +61,10 @@ REGION_COLORS = {
 }
 
 def draw_rounded_rect(draw, xy, radius, fill, outline=None, width=1):
-    """Draw a rounded rectangle."""
     draw.rounded_rectangle(xy, radius=radius, fill=fill, outline=outline, width=width)
 
-def wrap_text(draw, text, font, max_width, max_lines=2):
-    """Wrap text to fit within max_width, up to max_lines.
-    Returns list of lines."""
+def can_text_fit(draw, text, font, max_width, max_lines):
+    """Check if ENTIRE text fits in max_lines at this font size."""
     words = text.split()
     lines = []
     current = ""
@@ -76,223 +78,222 @@ def wrap_text(draw, text, font, max_width, max_lines=2):
             if current:
                 lines.append(current)
                 if len(lines) >= max_lines:
-                    break
+                    return False
             current = w
     
-    if current and len(lines) < max_lines:
+    if current:
         lines.append(current)
     
-    # If we still have more words but no more lines, truncate last line
-    if len(lines) >= max_lines and current and current != lines[-1]:
-        # Try to fit as much as possible on last line with ellipsis
-        last_line = lines[-1]
-        while last_line:
-            test = last_line + "…"
-            bbox = draw.textbbox((0, 0), test, font=font)
-            if bbox[2] - bbox[0] <= max_width:
-                lines[-1] = test
-                break
-            last_line = last_line[:-1]
-    
-    return lines
+    return len(lines) <= max_lines
 
-def draw_masthead():
-    """Draw the top masthead with date, centered with margins."""
-    masthead_h = 90
-    draw_rounded_rect(draw, (0, 0, W, masthead_h), 0, fill=COLOR_MASTHEAD_BG)
+def wrap_text_full(draw, text, font, max_width, max_lines):
+    """Wrap text to fit within max_width, up to max_lines. Assumes text fits."""
+    words = text.split()
+    lines = []
+    current = ""
     
-    # Title - measure and ensure it fits with margins
-    title = "Sunday 22 November 2026 — The World in One Day"
-    margin = 40
-    max_width = W - 2 * margin
+    for w in words:
+        test = current + (" " if current else "") + w
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if bbox[2] - bbox[0] <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            current = w
     
-    # Try current font, if too wide reduce size
-    bbox = draw.textbbox((0, 0), title, font=font_title)
-    title_w = bbox[2] - bbox[0]
+    if current:
+        lines.append(current)
     
-    if title_w > max_width:
-        # Reduce font size
-        font_size = 36 * max_width // title_w
-        if font_size < 20:
-            font_size = 20
-        try:
-            font_title_sized = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
-            font_title_sized = ImageFont.load_default()
-    else:
-        font_title_sized = font_title
-    
-    # Draw centered
-    draw.text((W // 2, 32), title, font=font_title_sized, fill=COLOR_MASTHEAD_TEXT, anchor="mm")
-    
-    # Decorative line
-    draw.line([(100, 70), (W - 100, 70)], fill=(255, 255, 255, 100), width=2)
-    
-    return masthead_h
+    return lines[:max_lines]
 
-def draw_symbol(draw, cx, cy, symbol_type, color, size=20):
-    """Draw a simple symbolic icon for each story type."""
+def fit_headline(draw, text, max_width, max_lines=3):
+    """Shrink font from 18 down to 15 until ENTIRE headline fits."""
+    fonts = [
+        (18, font_headline_18, 22),
+        (17, font_headline_17, 21),
+        (16, font_headline_16, 20),
+        (15, font_headline_15, 19),
+    ]
+    for size, font, line_h in fonts:
+        if can_text_fit(draw, text, font, max_width, max_lines):
+            lines = wrap_text_full(draw, text, font, max_width, max_lines)
+            return lines, font, line_h
+    # Fallback at 15pt - force fit by truncating at clause boundaries
+    text = truncate_at_clauses(draw, text, font_headline_15, max_width, max_lines)
+    lines = wrap_text_full(draw, text, font_headline_15, max_width, max_lines)
+    return lines, font_headline_15, 19
+
+def truncate_at_clauses(draw, text, font, max_width, max_lines):
+    """Truncate text at semicolons/colons first, then commas, until it fits."""
+    if can_text_fit(draw, text, font, max_width, max_lines):
+        return text
+    
+    # First try splitting on semicolons and colons (stronger boundaries)
+    for sep in [';', ':', ',']:
+        parts = []
+        current = ""
+        for ch in text:
+            current += ch
+            if ch == sep:
+                parts.append(current.strip())
+                current = ""
+        if current.strip():
+            parts.append(current.strip())
+        
+        if len(parts) > 1:
+            # Try dropping trailing parts
+            while parts:
+                test = " ".join(parts)
+                if can_text_fit(draw, test, font, max_width, max_lines):
+                    return test
+                parts.pop()
+    
+    # If nothing works, return first few words
+    words = text.split()
+    while words:
+        test = " ".join(words)
+        if can_text_fit(draw, test, font, max_width, max_lines):
+            return test
+        words.pop()
+    
+    return text[:50]
+
+def fit_fact(draw, text, max_width, max_lines):
+    """Fit fact text, trying fonts from 16 down to 14."""
+    fonts = [
+        (16, font_fact_16, 21),
+        (15, font_fact_15, 19),
+        (14, font_fact_14, 18),
+    ]
+    for size, font, line_h in fonts:
+        if can_text_fit(draw, text, font, max_width, max_lines):
+            lines = wrap_text_full(draw, text, font, max_width, max_lines)
+            return lines, font, line_h
+    # Fallback
+    lines = wrap_text_full(draw, text, font_fact_14, max_width, max_lines)
+    return lines, font_fact_14, 18
+
+def clean_fact(text):
+    """Remove trailing dangling & or , and ensure complete thought."""
+    text = text.strip()
+    # Remove trailing & or ,
+    while text.endswith(('&', ',', ';')):
+        text = text[:-1].strip()
+    # If it ends mid-sentence without punctuation, find last comma/semicolon to end cleanly
+    if text and text[-1] not in '.!?':
+        last_comma = text.rfind(',')
+        last_semi = text.rfind(';')
+        cut = max(last_comma, last_semi)
+        if cut > len(text) * 0.6:  # Only cut if we keep most of the text
+            text = text[:cut].strip()
+    return text
+
+def shorten_headline(text):
+    """Shorten headline by dropping trailing clauses at comma/colon, never mid-word."""
+    # Pre-shortened headlines that fit well in 3 lines at 15pt within 165px
+    replacements = {
+        "COP31 in Antalya closes in on final climate deal after overtime": "COP31 Antalya closes in on final climate deal",
+        "Iran attacks US bases in Bahrain; industrial site fire": "Iran attacks US bases in Bahrain; industrial site fire",
+        "Saudi-led coalition intercepts Houthi missile and drone": "Saudi-led coalition intercepts Houthi missile and drone",
+        "Russia double-tap strike on Kryvyi Rih kills two, wounds 60": "Russia double-tap strike on Kryvyi Rih; 2 dead, 60 hurt",
+        "Russian missiles and drone land in Poland; NATO vows to defend every inch": "Russian missiles & drone land in Poland; NATO vows to defend",
+        "FBI probes suspected hack of US criminal-justice database": "FBI probes hack of US criminal-justice database",
+        "Trump proposes 10% cap on credit card interest rates": "Trump proposes 10% cap on credit card interest rates",
+        "Anthropic IPO draws $120 billion retail demand": "Anthropic IPO draws $120B retail demand",
+        "Voyager becomes first human-made object 1 light-day from Earth": "Voyager reaches 1 light-day from Earth",
+        "ICJ finds evidence of Rohingya genocide; Myanmar rejects ruling": "ICJ finds Rohingya genocide; Myanmar rejects ruling",
+        "Boat capsized in Nigeria's Bayelsa state, at least 24 dead": "Boat capsized in Nigeria Bayelsa; at least 24 dead",
+        "Supercell storm devastates southern Brazil town, kills 3": "Supercell storm devastates S Brazil town; kills 3",
+        "Australia chase record 188 to beat England in MCG T20 opener": "Australia chase 188 to beat England in MCG T20",
+        "Dutch court bars BYD SUV in Europe over Defender resemblance": "Dutch court bars BYD SUV in Europe over Defender",
+    }
+    return replacements.get(text, text)
+
+def get_symbol(headline, region):
+    h = headline.lower()
+    if "cop31" in h or "climate" in h: return "globe"
+    if "iran" in h or "houthi" in h or "saudi" in h: return "missile"
+    if "russia" in h or "kryvyi" in h: return "explosion"
+    if "poland" in h or "nato" in h: return "shield"
+    if "fbi" in h or "hack" in h or "database" in h: return "database"
+    if "trump" in h or "credit" in h: return "money"
+    if "anthropic" in h or "ipo" in h: return "chart"
+    if "voyager" in h or "space" in h: return "rocket"
+    if "icj" in h or "rohingya" in h or "genocide" in h: return "scale"
+    if "boat" in h or "nigeria" in h or "capsized" in h: return "waves"
+    if "storm" in h or "brazil" in h: return "storm"
+    if "australia" in h or "cricket" in h or "t20" in h: return "cricket"
+    if "byd" in h or "court" in h or "defender" in h: return "gavel"
+    return "pin"
+
+def draw_symbol(draw, cx, cy, symbol_type, color, size=32):
     s = size // 2
-    
-    if symbol_type == "globe":  # COP31 / Global
+    if symbol_type == "globe":
         draw.ellipse([cx-s, cy-s, cx+s, cy+s], outline=color, width=2)
         draw.line([(cx, cy-s), (cx, cy+s)], fill=color, width=1)
         draw.line([(cx-s, cy), (cx+s, cy)], fill=color, width=1)
         draw.line([(cx-s*0.7, cy-s*0.7), (cx+s*0.7, cy+s*0.7)], fill=color, width=1)
-        draw.line([(cx+s*0.7, cy-s*0.7), (cx-s*0.7, cy+s*0.7)], fill=color, width=1)
-    
-    elif symbol_type == "missile":  # Iran/Israel/Poland strikes
-        draw.line([(cx, cy-s), (cx, cy+s//2)], fill=color, width=2)
-        draw.polygon([(cx, cy-s), (cx-4, cy-s+6), (cx+4, cy-s+6)], fill=color)
-        draw.line([(cx-3, cy+s//2), (cx-6, cy+s)], fill=color, width=1)
-        draw.line([(cx+3, cy+s//2), (cx+6, cy+s)], fill=color, width=1)
-    
-    elif symbol_type == "flame":  # Fire/industrial site
-        draw.polygon([(cx, cy-s), (cx-s//2, cy+s//2), (cx, cy), (cx+s//2, cy+s//2)], fill=color)
-        draw.polygon([(cx, cy-s//2), (cx-s//3, cy), (cx, cy-s//4), (cx+s//3, cy)], fill=(255, 160, 0))
-    
-    elif symbol_type == "chart":  # Economy/IPO
-        points = [(cx-s, cy+s), (cx-s//2, cy), (cx, cy+s//2), (cx+s//2, cy-s//2), (cx+s, cy-s)]
-        draw.line(points, fill=color, width=2)
-        for px, py in points:
-            draw.ellipse([px-1, py-1, px+1, py+1], fill=color)
-    
-    elif symbol_type == "scales":  # ICJ / Justice
-        draw.line([(cx-s, cy+s), (cx+s, cy+s)], fill=color, width=1)
-        draw.line([(cx, cy+s), (cx, cy)], fill=color, width=1)
-        draw.line([(cx-s, cy), (cx-s, cy-s)], fill=color, width=1)
-        draw.line([(cx-s-5, cy-s), (cx-s+5, cy-s)], fill=color, width=1)
-        draw.line([(cx+s, cy), (cx+s, cy-s)], fill=color, width=1)
-        draw.line([(cx+s-5, cy-s), (cx+s+5, cy-s)], fill=color, width=1)
-    
-    elif symbol_type == "satellite":  # Voyager
-        draw.ellipse([cx-6, cy-3, cx+6, cy+3], outline=color, width=1)
-        draw.line([(cx-10, cy), (cx-6, cy)], fill=color, width=1)
-        draw.line([(cx+6, cy), (cx+10, cy)], fill=color, width=1)
-        draw.line([(cx, cy-8), (cx, cy-3)], fill=color, width=1)
-        draw.line([(cx, cy+3), (cx, cy+8)], fill=color, width=1)
-        draw.line([(cx, cy-3), (cx, cy-11)], fill=color, width=1)
-        draw.ellipse([cx-2, cy-13, cx+2, cy-11], fill=color)
-    
-    elif symbol_type == "database":  # FBI database
-        draw.rectangle([cx-s, cy-s//2, cx+s, cy+s//2], outline=color, width=1)
-        draw.ellipse([cx-s, cy-s//2-3, cx+s, cy-s//2+3], outline=color, width=1)
-        draw.ellipse([cx-s, cy+s//2-3, cx+s, cy+s//2+3], outline=color, width=1)
+    elif symbol_type == "missile":
+        draw.line([(cx, cy-s), (cx, cy+s)], fill=color, width=3)
+        draw.polygon([(cx, cy-s), (cx-4, cy-s+8), (cx+4, cy-s+8)], fill=color)
+        draw.line([(cx-6, cy+2), (cx+6, cy-2)], fill=color, width=2)
+    elif symbol_type == "explosion":
+        import math
+        for angle in [0, 45, 90, 135, 180, 225, 270, 315]:
+            rad = math.radians(angle)
+            x1 = cx + int(s * 0.3 * math.cos(rad))
+            y1 = cy + int(s * 0.3 * math.sin(rad))
+            x2 = cx + int(s * math.cos(rad))
+            y2 = cy + int(s * math.sin(rad))
+            draw.line([(x1, y1), (x2, y2)], fill=color, width=2)
+        draw.ellipse([cx-s//2, cy-s//2, cx+s//2, cy+s//2], outline=color, width=2)
+    elif symbol_type == "shield":
+        pts = [(cx, cy-s), (cx+s, cy-s//2), (cx+s, cy+s//2), (cx, cy+s), (cx-s, cy+s//2), (cx-s, cy-s//2)]
+        draw.polygon(pts, outline=color, width=2)
         draw.line([(cx, cy-s//2), (cx, cy+s//2)], fill=color, width=1)
-    
-    elif symbol_type == "boat":  # Nigeria boat
-        draw.polygon([(cx-s, cy+s//2), (cx-s//2, cy-s//2), (cx+s//2, cy-s//2), (cx+s, cy+s//2)], fill=color)
-        draw.line([(cx-s//2, cy-s//2), (cx-s//2, cy-s)], fill=color, width=2)
-    
-    elif symbol_type == "storm":  # Brazil storm
-        draw.polygon([(cx, cy-s), (cx-s//2, cy), (cx, cy-s//3), (cx+s//2, cy)], fill=color)
-        draw.line([(cx-s, cy+s//3), (cx+s, cy+s//3)], fill=color, width=1)
-        draw.line([(cx-s//2, cy+s//2), (cx+s//2, cy+s//2)], fill=color, width=1)
-    
-    elif symbol_type == "cricket":  # Australia cricket
-        draw.line([(cx-s, cy), (cx+s, cy)], fill=color, width=2)
+    elif symbol_type == "database":
+        draw.ellipse([cx-s, cy-s//3, cx+s, cy+s//3], outline=color, width=2)
+        draw.line([(cx-s, cy-s//3), (cx-s, cy+s//3*2)], fill=color, width=2)
+        draw.line([(cx+s, cy-s//3), (cx+s, cy+s//3*2)], fill=color, width=2)
+        draw.ellipse([cx-s, cy+s//3*2-s//3, cx+s, cy+s//3*2+s//3], outline=color, width=2)
+    elif symbol_type == "money":
         draw.line([(cx, cy-s), (cx, cy+s)], fill=color, width=2)
-        draw.ellipse([cx-3, cy-3, cx+3, cy+3], outline=color, width=1)
-    
-    elif symbol_type == "car":  # BYD car
-        draw.rectangle([cx-s, cy, cx+s, cy+s//2], outline=color, width=1)
-        draw.ellipse([cx-s-2, cy+s//2-2, cx-s+2, cy+s//2+2], fill=color)
-        draw.ellipse([cx+s-2, cy+s//2-2, cx+s+2, cy+s//2+2], fill=color)
-    
+        draw.line([(cx-s, cy-4), (cx+s, cy-4)], fill=color, width=2)
+        draw.line([(cx-s, cy+4), (cx+s, cy+4)], fill=color, width=2)
+        draw.text((cx-2, cy-1), "$", font=font_region, fill=color, anchor="mm")
+    elif symbol_type == "chart":
+        draw.line([(cx-s, cy+s), (cx-s, cy-s), (cx+s, cy-s)], fill=color, width=2)
+        draw.line([(cx-s, cy+s), (cx+s, cy-s*0.5)], fill=color, width=2)
+        draw.line([(cx-s, cy), (cx+s, cy*0.2)], fill=(180,180,180), width=1)
+    elif symbol_type == "rocket":
+        draw.line([(cx, cy-s), (cx, cy+s//2)], fill=color, width=3)
+        draw.polygon([(cx-6, cy+s//2), (cx+6, cy+s//2), (cx, cy+s)], fill=color)
+        draw.line([(cx-4, cy+s//2), (cx-8, cy+s)], fill=color, width=2)
+        draw.line([(cx+4, cy+s//2), (cx+8, cy+s)], fill=color, width=2)
+    elif symbol_type == "scale":
+        draw.line([(cx-s, cy), (cx+s, cy)], fill=color, width=2)
+        draw.line([(cx, cy-s), (cx, cy)], fill=color, width=2)
+        draw.polygon([(cx-s, cy), (cx-s+4, cy-6), (cx-s-4, cy-6)], fill=color)
+        draw.polygon([(cx+s, cy), (cx+s-4, cy-6), (cx+s+4, cy-6)], fill=color)
+    elif symbol_type == "waves":
+        for i in range(3):
+            y_off = cy - s + i * (2*s//3)
+            draw.line([(cx-s, y_off), (cx-s//2, y_off-4), (cx, y_off), (cx+s//2, y_off-4), (cx+s, y_off)], fill=color, width=2)
+    elif symbol_type == "storm":
+        draw.line([(cx, cy-s), (cx, cy)], fill=color, width=3)
+        draw.line([(cx-6, cy), (cx+6, cy)], fill=color, width=3)
+        for i in range(3):
+            draw.line([(cx-8+i*4, cy+2), (cx-4+i*4, cy+8)], fill=color, width=2)
+    elif symbol_type == "cricket":
+        draw.ellipse([cx-s, cy, cx+s, cy+2*s], outline=color, width=2)
+        draw.line([(cx, cy), (cx, cy-s)], fill=color, width=3)
+        draw.line([(cx, cy-s), (cx-8, cy-s//2)], fill=color, width=2)
+    elif symbol_type == "gavel":
+        draw.rectangle([cx-2, cy-s, cx+2, cy+s//2], fill=color)
+        draw.rectangle([cx-s*1.5, cy+s//2-4, cx+s*1.5, cy+s//2+4], fill=color)
     else:
-        # Default: circle
-        draw.ellipse([cx-s, cy-s, cx+s, cy+s], outline=color, width=2)
-
-def get_symbol(headline, region):
-    """Map story to symbol type."""
-    h = headline.lower()
-    if "cop31" in h or "climate" in h:
-        return "globe"
-    elif "iran" in h and ("base" in h or "missile" in h or "drone" in h):
-        return "missile"
-    elif "houthi" in h or "saudi" in h:
-        return "missile"
-    elif "russia" in h and "kryvyi" in h:
-        return "missile"
-    elif "russia" in h and "poland" in h:
-        return "missile"
-    elif "fbi" in h or "database" in h:
-        return "database"
-    elif "trump" in h or "credit card" in h:
-        return "chart"
-    elif "anthropic" in h or "ipo" in h:
-        return "chart"
-    elif "voyager" in h:
-        return "satellite"
-    elif "icj" in h or "rohingya" in h or "genocide" in h:
-        return "scales"
-    elif "boat" in h or "capsized" in h or "nigeria" in h:
-        return "boat"
-    elif "storm" in h or "brazil" in h or "tupanciret" in h:
-        return "storm"
-    elif "australia" in h or "cricket" in h or "england" in h:
-        return "cricket"
-    elif "byd" in h or "defender" in h:
-        return "car"
-    elif region == "Global":
-        return "globe"
-    elif region == "Middle East":
-        return "missile"
-    elif region == "Europe":
-        return "missile"
-    elif region == "Americas":
-        return "chart"
-    elif region == "Economy":
-        return "chart"
-    elif region == "Science":
-        return "satellite"
-    elif region == "Asia":
-        return "scales"
-    elif region == "Africa":
-        return "boat"
-    elif region == "Sport":
-        return "cricket"
-    return "globe"
-
-def shorten_headline(h):
-    """Shorten long headlines to reasonable length."""
-    replacements = {
-        "COP31 in Antalya closes in on final climate deal after overtime": "COP31 Antalya: Final Climate Deal Near After Overtime",
-        "Iran attacks US bases in Bahrain; industrial site fire": "Iran Strikes US Bases in Bahrain; Industrial Site Fire",
-        "Saudi-led coalition intercepts Houthi missile and drone": "Saudi Coalition Intercepts Houthi Missile & Drone",
-        "Russia double-tap strike on Kryvyi Rih kills two, wounds 60": "Russia Double-Tap Strike on Kryvyi Rih: 2 Dead, 60 Hurt",
-        "Russian missiles and drone land in Poland; NATO vows to defend every inch": "Russian Missiles & Drone Land in Poland; NATO Vows Defense",
-        "FBI probes suspected hack of US criminal-justice database": "FBI Probes Suspected Hack of US Criminal-Justice Database",
-        "Trump proposes 10% cap on credit card interest rates": "Trump Proposes 10% Cap on Credit Card Rates",
-        "Anthropic IPO draws $120 billion retail demand": "Anthropic IPO Draws $120B Retail Demand",
-        "Voyager becomes first human-made object 1 light-day from Earth": "Voyager Reaches 1 Light-Day from Earth",
-        "ICJ finds evidence of Rohingya genocide; Myanmar rejects ruling": "ICJ Finds Rohingya Genocide; Myanmar Rejects Ruling",
-        "Boat capsized in Nigeria's Bayelsa state, at least 24 dead": "Boat Capsizes in Bayelsa, Nigeria: 24 Dead",
-        "Supercell storm devastates southern Brazil town, kills 3": "Supercell Storm Devastates Tupanciretã, Brazil: 3 Dead",
-        "Australia chase record 188 to beat England in MCG T20 opener": "Australia Chase Record 188 to Beat England at MCG",
-        "Dutch court bars BYD SUV in Europe over Defender resemblance": "Dutch Court Bars BYD SUV in Europe Over Defender Design",
-    }
-    return replacements.get(h, h)
-
-def shorten_fact(f):
-    """Shorten fact to one line."""
-    replacements = {
-        "Nearly 200 countries at COP31 in Antalya negotiated a third and 'final' text into Sunday morning after drafts stripped of fossil-fuel language drew threats of walkout, with a closing plenary set for later Sunday.": "Nearly 200 nations near final text after fossil-fuel walkout threats",
-        "Iran's IRGC claimed missile-and-drone attacks on two US bases in Bahrain (Sheikh Isa and Juffair), and Bahrain said a civilian industrial facility on Sitra Island was hit and set on fire, with no injuries reported.": "IRGC claims missile/drone strikes on 2 US bases; Sitra facility hit",
-        "The Saudi-led coalition intercepted a ballistic missile and a drone launched toward western Saudi Arabia and Riyadh as Houthi attacks on Taiz killed one and wounded seven, deepening Gulf escalation.": "Saudi intercepts Houthi missile/drone; Taiz attack kills 1, wounds 7",
-        "Ballistic missiles and follow-up drone strikes on Zelensky's hometown Kryvyi Rih killed a 7-year-old boy and a 20-year-old paramedic and wounded 60, part of a barrage of 27 ballistic missiles, 84 cruise missiles and 404 drones.": "Missiles/drones hit Zelensky's hometown; boy (7) & paramedic (20) killed, 60 hurt",
-        "A Kh-101 cruise missile, a second missile and a jet-powered drone fell in southeastern Poland near Coalition-of-the-Willing exercises; Tusk called it an intentional provocation and NATO chief Rutte pledged 'NATO will defend every inch of Polish territory'.": "Kh-101 & drone fall in SE Poland; NATO pledges defense",
-        "The FBI is investigating a suspected breach of the nationwide database used by federal, state and local law enforcement to share warrants, criminal histories and background checks.": "Suspected breach of nationwide criminal-history & warrant system",
-        "President Trump said he would back a 10% cap on credit card interest rates with Democrats' support, and again criticised the Federal Reserve's rate policy, citing India's 7% growth.": "Proposes 10% cap with Dem support; criticizes Fed policy",
-        "Anthropic's share sale attracted about $120 billion in retail demand and over $500 billion institutional interest, even as the stock fell nearly 15% on Friday; an Anthropic mathematician separately claimed Claude helped solve the Riemann hypothesis.": "$120B retail, $500B+ institutional demand; stock down ~15%",
-        "Forty-nine years after launch, NASA's Voyager spacecraft became the first human-made object to sit one light-day away from Earth, a milestone in deep-space exploration.": "First human-made object at 1 light-day (25.9B km), 49 yrs after launch",
-        "The International Court of Justice found Myanmar's forces committed genocide against the Rohingya, targeting 800,000 people and killing about 10,000; Myanmar called the verdict unfair while Malaysia moves to resettle 10,000 Rohingya.": "Myanmar forces targeted 800K, killed ~10K; Myanmar rejects verdict",
-        "A boat carrying mourners to a burial ceremony capsized in Nigeria's Bayelsa state, killing at least 24 people; 24 others were rescued and the operator fled the scene, police said.": "Mourners' boat capsizes in Bayelsa; 24 dead, 24 rescued, operator flees",
-        "A supercell storm with 114 kmph winds tore through Tupanciretã in Rio Grande do Sul, killing three, injuring 162 and damaging around 8,000 homes, forcing nearly all of the town's 20,000 residents to leave.": "114 km/h winds hit Tupanciretã; 3 dead, 162 hurt, 8K homes damaged",
-        "Australia beat world number one England by three wickets in the first T20 at the Melbourne Cricket Ground, completing the highest successful run chase at the ground and ending England's seven-match winning streak.": "Record 188 chase at MCG ends England's 7-match streak; Aus win by 3 wkts",
-        "The Hague court ruled BYD's Fangchengbao Ti7 infringes the EU design of JLR's Defender, barring its sale in Europe and production at BYD's planned Hungary plant pending resolution.": "Hague rules Ti7 infringes Defender design; bars EU sale & Hungary production",
-    }
-    return replacements.get(f, f[:120])
+        draw.ellipse([cx-s//2, cy-s//2, cx+s//2, cy+s//2], fill=color)
 
 # Load stories
 with open("/root/makefun/news-image-20261122/data-news.json") as f:
@@ -302,106 +303,133 @@ stories = []
 for s in raw_stories:
     stories.append({
         "headline": shorten_headline(s["headline"]),
-        "fact": shorten_fact(s["summary_1line"]),
+        "fact": clean_fact(s["summary_1line"]),
         "symbol": get_symbol(s["headline"], s["region"]),
         "region": s["region"],
     })
 
-# Grid layout: 14 cards, arranged to fill canvas evenly
-# Use 3 rows: 5, 5, 4 cards - stretch to full width
-masthead_h = draw_masthead()
+# Layout dimensions
+masthead_h = 80
+footer_h = 36
+ticker_h = 36
+margin_x = 16
+margin_y = 8
 
-# Footer area
-footer_h = 40
-footer_y = H - footer_h
+# Draw masthead
+draw_rounded_rect(draw, (0, 0, W, masthead_h), 0, fill=COLOR_MASTHEAD_BG)
+title = "Sunday 22 November 2026 — The World in One Day"
+bbox = draw.textbbox((0, 0), title, font=font_title)
+title_w = bbox[2] - bbox[0]
+if title_w > W - 80:
+    font_title = load_font("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(36 * (W - 80) / title_w))
+draw.text((W // 2, masthead_h // 2), title, font=font_title, fill=COLOR_MASTHEAD_TEXT, anchor="mm")
+draw.line([(80, masthead_h - 8), (W - 80, masthead_h - 8)], fill=(255, 255, 255, 100), width=2)
 
-# Available area for cards
-available_top = masthead_h + 15
-available_bottom = footer_y - 15
-available_height = available_bottom - available_top
+# Available space for cards
+cards_top = masthead_h + 10
+cards_bottom = H - footer_h - ticker_h - 10
+cards_height = cards_bottom - cards_top
 
-# Grid configuration
-row_counts = [5, 5, 4]  # 14 cards in 3 rows
+# Grid: 3 rows (5, 5, 4)
+row_counts = [5, 5, 4]
 num_rows = len(row_counts)
-row_height = available_height // num_rows
-
-margin_x = 20
-margin_y = 10
+row_h = cards_height // num_rows
 
 card_index = 0
 for row_idx, num_cards in enumerate(row_counts):
-    row_y = available_top + row_idx * (row_height + margin_y)
-    
-    # Calculate card width for this row (stretch to fill width)
+    row_y = cards_top + row_idx * row_h
     total_gap = margin_x * (num_cards - 1)
     card_w = (W - 2 * margin_x - total_gap) // num_cards
-    card_h = row_height
+    card_h = row_h - margin_y
     
     for col_idx in range(num_cards):
         if card_index >= len(stories):
             break
-        
         story = stories[card_index]
         x = margin_x + col_idx * (card_w + margin_x)
         y = row_y
         
         # Card background
-        draw_rounded_rect(draw, (x, y, x + card_w, y + card_h), 8, 
+        draw_rounded_rect(draw, (x, y, x + card_w, y + card_h), 8,
                           fill=COLOR_CARD_BG, outline=COLOR_BORDER, width=1)
         
-        # Card inner padding
-        pad = 12
+        pad = 10
         inner_x = x + pad
         inner_y = y + pad
         inner_w = card_w - 2 * pad
         inner_h = card_h - 2 * pad
         
-        # Region tag (top-left)
         region = story["region"]
         rcolor = REGION_COLORS.get(region, (100, 100, 100))
-        tag_w = min(90, inner_w - 40)  # Ensure tag doesn't exceed card
-        tag_h = 20
-        draw_rounded_rect(draw, (inner_x, inner_y, inner_x + tag_w, inner_y + tag_h), 4,
-                          fill=rcolor)
-        draw.text((inner_x + tag_w // 2, inner_y + tag_h // 2), region, font=font_region, fill=(255,255,255), anchor="mm")
         
-        # Symbol (top-right) - ensure it stays within card
-        sym_size = 20
+        # Region tag (top-left)
+        tag_text = region
+        bbox = draw.textbbox((0, 0), tag_text, font=font_region)
+        tag_w = min(bbox[2] - bbox[0] + 16, inner_w - 40)
+        tag_h = 18
+        draw_rounded_rect(draw, (inner_x, inner_y, inner_x + tag_w, inner_y + tag_h), 4, fill=rcolor)
+        draw.text((inner_x + tag_w // 2, inner_y + tag_h // 2), tag_text, font=font_region, fill=(255,255,255), anchor="mm")
+        
+        # Symbol (top-right) - larger 32px
+        sym_size = 32
         sym_x = x + card_w - pad - sym_size // 2
-        sym_y = y + pad + sym_size // 2 + 4
+        sym_y = y + pad + tag_h // 2
         draw_symbol(draw, sym_x, sym_y, story["symbol"], rcolor, size=sym_size)
         
-        # Headline - wrap to fit card width (max 2 lines)
-        headline_y = inner_y + tag_h + 8
+        # Headline area - starts below tag
+        headline_y = inner_y + tag_h + 6
         headline_max_w = inner_w
         
-        # Try regular headline font first
-        headline_lines = wrap_text(draw, story["headline"], font_headline, headline_max_w, max_lines=2)
+        # Fit headline in up to 3 lines, shrinking font from 18 down to 15
+        headline_lines, used_font, line_h = fit_headline(draw, story["headline"], headline_max_w, 3)
         
-        # If too many lines or text still too wide, try smaller font
-        if len(headline_lines) > 2:
-            headline_lines = wrap_text(draw, story["headline"], font_headline_small, headline_max_w, max_lines=2)
-        
-        # Draw headline lines
-        line_height = 20
+        # Draw headline
         for li, line in enumerate(headline_lines):
-            draw.text((inner_x, headline_y + li * line_height), line, font=font_headline if len(headline_lines) <= 1 else font_headline_small, fill=COLOR_TEXT)
+            draw.text((inner_x, headline_y + li * line_h), line, font=used_font, fill=COLOR_TEXT)
         
-        # Fact - wrap to fit card width (max 3 lines, but fit in remaining space)
-        fact_y = headline_y + len(headline_lines) * line_height + 6
-        fact_max_w = inner_w
-        fact_lines = wrap_text(draw, story["fact"], font_body, fact_max_w, max_lines=3)
+        # Fact area - use remaining space, up to 6 lines
+        fact_y = headline_y + len(headline_lines) * line_h + 4
+        fact_max_h = inner_y + inner_h - fact_y
+        max_fact_lines = min(6, max(2, fact_max_h // 20))
         
-        # Limit lines to fit in card
-        max_fact_lines = max(1, (inner_h - (fact_y - inner_y)) // 16)
-        fact_lines = fact_lines[:max_fact_lines]
+        # Fit fact in available lines, font 16 down to 14
+        fact_lines, fact_font, fact_line_h = fit_fact(draw, story["fact"], headline_max_w, max_fact_lines)
         
         for li, line in enumerate(fact_lines):
-            draw.text((inner_x, fact_y + li * 16), line, font=font_body, fill=COLOR_TEXT_MUTED)
+            draw.text((inner_x, fact_y + li * fact_line_h), line, font=fact_font, fill=COLOR_TEXT_MUTED)
         
         card_index += 1
 
-# Draw footer
+# Ticker band: "ALSO TODAY" + 4 one-liners
+ticker_y = H - footer_h - ticker_h
+draw_rounded_rect(draw, (0, ticker_y, W, ticker_y + ticker_h), 0, fill=COLOR_TICKER_BG)
+
+ticker_items = [
+    "Belgium national strike to shut airspace Monday",
+    "Bangladesh PM blames India for fresh unrest",
+    "Antonsen ends Sen's 13-match streak, Hong Kong Open",
+    "Nebraska ends 31-game top-25 drought, beats Ohio State"
+]
+
+label = "ALSO TODAY"
+label_bbox = draw.textbbox((0, 0), label, font=font_ticker)
+label_w = label_bbox[2] - label_bbox[0]
+label_x = 20
+label_y = ticker_y + ticker_h // 2
+draw.text((label_x, label_y), label, font=font_ticker, fill=COLOR_TICKER_LABEL, anchor="lm")
+
+# Items to the right of label
+items_text = " · ".join(ticker_items)
+items_x = label_x + label_w + 16
+items_max_w = W - items_x - 20
+
+# Fit items in one line
+if can_text_fit(draw, items_text, font_ticker_text, items_max_w, 1):
+    items_lines = wrap_text_full(draw, items_text, font_ticker_text, items_max_w, 1)
+    draw.text((items_x, label_y), items_lines[0], font=font_ticker_text, fill=COLOR_TICKER_TEXT, anchor="lm")
+
+# Footer
+footer_y = H - footer_h
 draw_rounded_rect(draw, (0, footer_y, W, H), 0, fill=COLOR_FOOTER_BG)
 footer_text = "Sources: Reuters, Al Jazeera, AP, SBS · make.fun news-image-20261122"
 draw.text((W // 2, footer_y + footer_h // 2), footer_text, font=font_footer, fill=COLOR_TEXT_MUTED, anchor="mm")
